@@ -79,10 +79,32 @@ LOW ambition caps the score at 2 regardless of execution quality.
 
 ## Wiring into each harness
 
-### Claude Code (`~/.claude/settings.json`)
+Each harness needs one hook that calls `agent-improve` when a session ends. The hook is
+fail-open -- if `agent-improve` is not installed or fails, the harness exits normally.
 
-Add to the `Stop` hooks:
+**Before wiring any harness:** install the CLI once:
 
+```bash
+cp agent_improve.py ~/.local/bin/agent-improve
+chmod +x ~/.local/bin/agent-improve
+agent-improve report  # confirm it works
+```
+
+---
+
+### Claude Code
+
+Claude Code fires a `Stop` hook every time a session ends. Add one entry to the `Stop` array
+in `~/.claude/settings.json`.
+
+**Step 1** -- Open the file:
+```bash
+open ~/.claude/settings.json
+```
+
+**Step 2** -- Find the `"hooks"` key. If it does not exist, add it. Locate or create the `"Stop"` array inside it.
+
+**Step 3** -- Add this object to the `"Stop"` array (add a comma after the previous entry if one exists):
 ```json
 {
   "hooks": [{
@@ -93,8 +115,25 @@ Add to the `Stop` hooks:
 }
 ```
 
-### Codex (`~/.codex/hooks.json`)
+**Step 4** -- Save the file. No restart needed -- Claude Code reads hooks on the next session start.
 
+**Verify:** Start and end a Claude Code session, then run `agent-improve report --days 1`. You should see `claude-code` in the harness list.
+
+---
+
+### Codex
+
+Codex reads hooks from `~/.codex/hooks.json`. The file may not exist yet.
+
+**Step 1** -- Open or create the file:
+```bash
+# If the file does not exist:
+echo '{}' > ~/.codex/hooks.json
+
+open ~/.codex/hooks.json
+```
+
+**Step 2** -- Add or merge the `session_end` key:
 ```json
 {
   "session_end": [
@@ -106,41 +145,109 @@ Add to the `Stop` hooks:
 }
 ```
 
-### Copilot CLI (relay post-dispatch)
+If `session_end` already exists, append the object to the existing array.
 
-After the `relay.mjs` run completes, add:
+**Step 3** -- Save the file. No restart needed.
 
+**Verify:** Run a Codex session, then `agent-improve report --days 1`. You should see `codex`.
+
+---
+
+### Copilot CLI
+
+Copilot CLI is invoked via `relay.mjs` (the delegate relay script). Add one line after the
+relay exits.
+
+**Step 1** -- Open your relay wrapper or the script where you call `relay.mjs`:
 ```bash
+# Example wrapper at ~/bin/copilot-task.sh
+```
+
+**Step 2** -- Add the hook immediately after the `node relay.mjs` call:
+```bash
+node ~/.hermes/skills/autonomous-ai-agents/copilot-delegate/scripts/relay.mjs \
+  --brief /tmp/brief.txt \
+  --cd /path/to/repo \
+  --allow-all-tools
+
+# Record session end (fail-open)
 AGENT_HARNESS=copilot-cli agent-improve eval --auto 2>/dev/null || true
 ```
 
-### Hermes (cron)
+**Step 3** -- Save the file.
 
-```bash
-hermes cron add "every monday 9am" "Weekly agent improvement report" \
-  --script agent-improve-weekly.sh --no-agent
-```
+**Verify:** Run `copilot-byok` or dispatch a relay task, then `agent-improve report --days 1`.
 
-Where `agent-improve-weekly.sh` contains:
+---
+
+### Hermes
+
+Hermes does not have a per-session Stop hook in the same way, but it has a cron scheduler.
+Wire a weekly report delivery instead.
+
+**Step 1** -- Create the report script:
 ```bash
+cat > ~/.hermes/scripts/agent-improve-weekly.sh << 'EOF'
 #!/usr/bin/env bash
 agent-improve report --days 7
+EOF
+chmod +x ~/.hermes/scripts/agent-improve-weekly.sh
 ```
+
+**Step 2** -- Register the cron job:
+```bash
+hermes cron add "every monday 9am" "Weekly agent self-improvement report" \
+  --script agent-improve-weekly.sh \
+  --no-agent
+```
+
+**Step 3** -- Confirm the job was created:
+```bash
+hermes cron list
+```
+
+You should see the Monday 9am job in the list. It will deliver the report to your configured
+Hermes notification channel.
+
+---
 
 ### Any other harness
 
-The included `agent-improve-session-end.sh` is a generic one-liner hook:
+Use the included `agent-improve-session-end.sh` as a generic hook.
 
+**Step 1** -- Copy it to PATH:
 ```bash
-# In your harness exit/stop hook:
-bash /path/to/agent-improve-session-end.sh my-harness-name
+cp agent-improve-session-end.sh ~/.local/bin/
+chmod +x ~/.local/bin/agent-improve-session-end.sh
 ```
 
-Or set `AGENT_HARNESS` in the environment and call directly:
+**Step 2** -- In your harness's exit or stop hook, add one line:
+```bash
+bash ~/.local/bin/agent-improve-session-end.sh my-harness-name
+```
+
+Replace `my-harness-name` with a short identifier for the harness (e.g. `cursor`, `aider`,
+`opencode`). This name appears in reports.
+
+**Step 3** -- Test it:
+```bash
+bash ~/.local/bin/agent-improve-session-end.sh test-harness
+agent-improve report --days 1
+# Should show: test-harness  n=1
+```
+
+---
+
+### Quick-check all harnesses
+
+After wiring, run one session on each harness and then:
 
 ```bash
-AGENT_HARNESS=my-harness agent-improve eval --auto 2>/dev/null || true
+agent-improve report --days 1
 ```
+
+Expected output lists every harness you wired with `n >= 1`. Any harness missing from the
+list did not fire its hook correctly -- recheck the hook file for that harness.
 
 ## Store layout
 
